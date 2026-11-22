@@ -1,0 +1,224 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Yuniverse Tetris</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101528;color:white;font-family:Arial,sans-serif;text-align:center}
+header{padding:18px;font-size:25px;font-weight:bold;color:#65e5ff}
+.panel{max-width:440px;margin:12px auto;padding:16px;background:#202b45;border-radius:16px}
+button{background:#536bff;color:white;border:0;border-radius:10px;padding:13px;margin:5px;font-size:16px;font-weight:bold}
+button:active{opacity:.7}
+input{padding:12px;width:90%;margin:7px;border-radius:8px;border:0}
+canvas{background:#080d1b;border:3px solid #526bff;border-radius:6px;width:min(80vw,280px);height:auto}
+#game{display:none}
+#score{font-size:22px;color:#65e5ff}
+.controls button{width:65px;height:55px;font-size:23px}
+.small{font-size:13px;color:#b8c5df}
+</style>
+</head>
+<body>
+<header>⚡ YUNIVERSE TETRIS</header>
+
+<section id="home" class="panel">
+<h2>メインメニュー</h2>
+<button onclick="showNPC()">🤖 NPC対戦</button>
+<button onclick="randomMatch()">🌐 ランダム対戦</button>
+<button onclick="showRanking()">🏆 ランキング TOP100</button>
+<div id="message" class="small">Yuniverse Tetrisへようこそ！</div>
+</section>
+
+<section id="npc" class="panel" style="display:none">
+<h2>NPC対戦</h2>
+<p>難易度を選んでね</p>
+<button onclick="startGame('weak')">弱</button>
+<button onclick="startGame('medium')">中</button>
+<button onclick="startGame('strong')">強</button>
+<button onclick="home()">戻る</button>
+</section>
+
+<section id="game" class="panel">
+<h2 id="mode">NPC対戦</h2>
+<div id="score">スコア：0</div>
+<p id="npcScore">NPC：0</p>
+<canvas id="board" width="240" height="480"></canvas>
+<div class="controls">
+<div>
+<button onclick="move(-1)">◀</button>
+<button onclick="rotate()">⟳</button>
+<button onclick="move(1)">▶</button>
+</div>
+<div>
+<button onclick="drop()">▼</button>
+<button onclick="pauseGame()">Ⅱ</button>
+</div>
+</div>
+<p class="small">左右：移動　⟳：回転　▼：高速落下</p>
+<button onclick="home()">ホームへ</button>
+</section>
+
+<section id="ranking" class="panel" style="display:none">
+<h2>🏆 ランキング TOP100</h2>
+<div id="rankList">読み込み中...</div>
+<button onclick="home()">戻る</button>
+</section>
+
+<script>
+const SUPABASE_URL="https://igbhiwlvwejrlykcqlad.supabase.co/rest/v1/";
+const SUPABASE_KEY="sb_publishable_FeHKKAuhVYLGDoDkJlzojg_eq1RiEZy";
+
+let db=null;
+if(SUPABASE_URL.startsWith("https://") &&
+   SUPABASE_KEY!=="ここにPublishable key"){
+  db=supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+}
+
+const screens=["home","npc","game","ranking"];
+function screen(id){
+ screens.forEach(x=>document.getElementById(x).style.display=x===id?"block":"none");
+}
+function home(){stopGame();screen("home")}
+function showNPC(){screen("npc")}
+
+async function randomMatch(){
+ document.getElementById("message").textContent=
+ "オンライン対戦のマッチングサーバーは次の設定段階で接続するよ。";
+}
+async function showRanking(){
+ screen("ranking");
+ const list=document.getElementById("rankList");
+ if(!db){list.textContent="Supabaseの接続設定がまだだよ。";return}
+ const {data,error}=await db.from("tetris_rankings")
+  .select("user_id,rating,wins,losses,draws,win_rate")
+  .order("rating",{ascending:false}).limit(100);
+ if(error){list.textContent="ランキング取得エラー："+error.message;return}
+ if(!data.length){list.textContent="まだランキングデータがないよ。";return}
+ list.innerHTML=data.map((p,i)=>
+  `<p>${i+1}位　${p.user_id.slice(0,8)}　${p.rating} レート　勝率${p.win_rate??0}%</p>`
+ ).join("");
+}
+
+const canvas=document.getElementById("board");
+const ctx=canvas.getContext("2d");
+const W=10,H=20,S=24;
+const shapes=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]],
+ [[1,0,0],[1,1,1]],
+ [[0,0,1],[1,1,1]],
+ [[1,1,0],[0,1,1]],
+ [[0,1,1],[1,1,0]]
+];
+const colors=["#60d9ff","#ffe35c","#b875ff","#ff9d52","#6389ff","#6ee7a4","#ff688e"];
+let board,piece,score,lines,timer,active,paused,difficulty,npcScore,npcRate;
+
+function newPiece(){
+ let i=Math.floor(Math.random()*shapes.length);
+ return {shape:shapes[i].map(r=>r.slice()),x:3,y:0,color:colors[i]};
+}
+function startGame(level){
+ difficulty=level;
+ score=0;lines=0;npcScore=0;active=true;paused=false;
+ npcRate=level==="weak"?8:level==="medium"?15:level==="strong"?24:8;
+ board=Array.from({length:H},()=>Array(W).fill(0));
+ piece=newPiece();
+ document.getElementById("mode").textContent=
+ "NPC対戦："+({weak:"弱",medium:"中",strong:"強"}[level]);
+ document.getElementById("score").textContent="スコア：0";
+ document.getElementById("npcScore").textContent="NPC：0";
+ screen("game");
+ draw();
+ clearInterval(timer);
+ timer=setInterval(tick,650);
+}
+function valid(p,dx=0,dy=0,shape=p.shape){
+ for(let y=0;y<shape.length;y++)for(let x=0;x<shape[y].length;x++){
+  if(!shape[y][x])continue;
+  let nx=p.x+x+dx,ny=p.y+y+dy;
+  if(nx<0||nx>=W||ny>=H)return false;
+  if(ny>=0&&board[ny][nx])return false;
+ }
+ return true;
+}
+function lock(){
+ piece.shape.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v&&piece.y+y>=0)board[piece.y+y][piece.x+x]=piece.color;
+ }));
+ let count=0;
+ for(let y=H-1;y>=0;y--){
+  if(board[y].every(v=>v)){
+   board.splice(y,1);
+   board.unshift(Array(W).fill(0));
+   count++;y++;
+  }
+ }
+ if(count){lines+=count;score+=[0,100,300,500,800][count]*Math.max(1,Math.floor(lines/10)+1)}
+ piece=newPiece();
+ if(!valid(piece)){finish();return}
+ updateScore();
+}
+function tick(){
+ if(!active||paused)return;
+ npcScore+=npcRate;
+ if(valid(piece,0,1))piece.y++;
+ else lock();
+ updateScore();
+ draw();
+}
+function updateScore(){
+ document.getElementById("score").textContent="スコア："+score+"　ライン："+lines;
+ document.getElementById("npcScore").textContent="NPC："+Math.floor(npcScore);
+}
+function draw(){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){
+  if(board[y][x])cell(x,y,board[y][x]);
+  else{ctx.strokeStyle="#202b45";ctx.strokeRect(x*S,y*S,S,S)}
+ }
+ if(piece)piece.shape.forEach((r,y)=>r.forEach((v,x)=>{
+  if(v)cell(piece.x+x,piece.y+y,piece.color);
+ }));
+}
+function cell(x,y,color){
+ ctx.fillStyle=color;ctx.fillRect(x*S+1,y*S+1,S-2,S-2);
+ ctx.strokeStyle="#ffffff55";ctx.strokeRect(x*S+1,y*S+1,S-2,S-2);
+}
+function move(dx){
+ if(active&&!paused&&valid(piece,dx,0)){piece.x+=dx;draw()}
+}
+function rotate(){
+ if(!active||paused)return;
+ let s=piece.shape[0].map((_,i)=>piece.shape.map(r=>r[i]).reverse());
+ if(valid(piece,0,0,s)){piece.shape=s;draw()}
+}
+function drop(){
+ if(!active||paused)return;
+ while(valid(piece,0,1)){piece.y++;score+=2}
+ lock();draw();
+}
+function pauseGame(){
+ if(!active)return;
+ paused=!paused;
+ document.getElementById("mode").textContent=paused?"一時停止":"NPC対戦";
+}
+function stopGame(){active=false;clearInterval(timer)}
+function finish(){
+ stopGame();
+ let result=score>npcScore?"あなたの勝ち！":score<npcScore?"NPCの勝ち！":"引き分け！";
+ alert(result+"\nあなた："+score+"\nNPC："+Math.floor(npcScore));
+ home();
+}
+document.addEventListener("keydown",e=>{
+ if(e.key==="ArrowLeft")move(-1);
+ if(e.key==="ArrowRight")move(1);
+ if(e.key==="ArrowDown")tick();
+ if(e.key==="ArrowUp"||e.key===" ")rotate();
+});
+</script>
+</body>
+</html>
